@@ -1,0 +1,237 @@
+
+---
+- name: ensure lxd host is defined
+  hosts: localhost
+  tasks:
+    - assert:
+        that:
+          - lxd_host is defined
+          - interval is defined
+        fail_msg: 'lxd_host=hostname and interval=[weekly|daily] need to be defined'
+
+#### Get all containers on lxd host and add it to ansible inventory ###
+
+- name: Get all containers on {{ lxd_host }} and add it to ansible inventory
+  hosts: '{{ lxd_host }}'
+  gather_facts: false
+
+  tasks:
+    - name: get containers list
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: http://localhost/1.0/containers
+        return_content: yes
+        status_code:
+          - 200
+      delegate_to: '{{ lxd_host }}'
+      register: container_list
+
+    - debug:
+         var: container_list.json.metadata
+
+    - name: get name of containers on {{ lxd_host }}
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost/{{ item }}'
+        return_content: yes
+        status_code:
+          - 200
+      delegate_to: '{{ lxd_host }}'
+      register: containers
+      with_items:
+        - "{{ container_list.json.metadata }}"
+
+    - debug:
+        var: containers | json_query('results[*].json.metadata.name')
+
+    - name: add all containers name to in memory inventory
+      add_host:
+        groups: lxd_containers
+        name: '{{ item }}'
+      with_items:
+        - "{{ containers | json_query('results[*].json.metadata.name') }}"
+
+- name: Clean up old snap-backup snapshots if any
+  hosts: lxd_containers
+  gather_facts: false
+
+  tasks:
+    - name: remove snapshot snap-backup on container {{ inventory_hostname }} if it exists
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost/1.0/containers/{{ inventory_hostname }}/snapshots/snap-backup'
+        method: delete
+        return_content: yes
+        status_code:
+          - 200
+          - 202
+      delegate_to: '{{ lxd_host }}'
+      register: snapshot_delete
+      ignore_errors: true
+
+    - name: wait for snapshot delete operation to complete if it exists for {{ inventory_hostname }}
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost{{ snapshot_delete.json.operation }}/wait'
+        return_content: yes
+        timeout: 60
+      when:
+        - snapshot_delete.json.metadata is defined
+      delegate_to: '{{ lxd_host }}'
+      register: operation_delete
+      ignore_errors: true
+    - debug: var=operation_delete
+
+- name: start creating image sequentially for each container one at a time
+  hosts: lxd_containers
+  gather_facts: false
+  serial: 1
+
+  pre_tasks:
+    - set_fact:
+        todayDate: "{{ lookup('pipe','date +%Y-%m-%d') }}"
+    - debug: var=todayDate
+    - set_fact:
+        previousDate: "{{ lookup('pipe','date +%Y-%m-%d -d -3day') }}"
+      when: interval == 'daily'
+    - set_fact:
+        previousDate: "{{ lookup('pipe','date +%Y-%m-%d -d -3week') }}"
+      when: interval == 'weekley'
+    - debug: var=previousDate
+
+  tasks:
+    - name: take a snapshot of {{ inventory_hostname }}
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost/1.0/containers/{{ inventory_hostname }}/snapshots'
+        method: post
+        return_content: yes
+        body: '{ "name": "snap-backup" }'
+        body_format: json
+        status_code:
+          - 200
+          - 202
+      delegate_to: '{{ lxd_host }}'
+      register: snapshot
+    - debug: var=snapshot.json.metadata
+    - name: wait for create snapshot 'snap-backup' operation to complete for {{ inventory_hostname }}
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost{{ snapshot.json.operation }}/wait'
+        return_content: yes
+        timeout: 300
+      delegate_to: '{{ lxd_host }}'
+      register: operation_snapshot
+    - debug: var=operation_snapshot.json
+    - name: fail if snapshot create failure
+      fail:
+        msg: "Error creating snapshot - {{ operation_snapshot.json.metadata.err }}"
+      when:
+        - operation_snapshot.json.metadata.status == 'Failure'
+    - name: create image
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: http://localhost/1.0/images
+        method: post
+        return_content: yes
+        body: '{"aliases": [{"name":"{{ inventory_hostname }}-{{ interval }}-{{todayDate}}","description":"A backup for {{ inventory_hostname }} taken at {{todayDate}}"}],"source":{"type":"snapshot","name":"{{ inventory_hostname }}/snap-backup"}}'
+        body_format: json
+        status_code:
+          - 200
+          - 202
+      delegate_to: '{{ lxd_host }}'
+      register: image
+    - debug: var=image.json.metadata
+
+    - name: wait for create image operation to complete for {{ inventory_hostname }}
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost{{ image.json.operation }}/wait'
+        return_content: yes
+        timeout: 1800
+      delegate_to: '{{ lxd_host }}'
+      register: operation_image
+    - debug: var=operation_image.json
+    - name: fail if image create failure
+      fail:
+        msg: "Error creating image - {{ operation_image.json.metadata.err }}"
+      when:
+        - operation_image.json.metadata.status == 'Failure'
+
+    - name: remove snapshot snap-backup on container {{ inventory_hostname }}
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost/1.0/containers/{{ inventory_hostname }}/snapshots/snap-backup'
+        method: delete
+        return_content: yes
+        status_code:
+          - 200
+          - 202
+      delegate_to: '{{ lxd_host }}'
+      register: snapshot_delete
+    - debug: var=snapshot_delete.json.metadata
+
+    - name: wait for snapshot delete operation to complete for {{ inventory_hostname }}
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost{{ snapshot_delete.json.operation }}/wait'
+        return_content: yes
+        timeout: 60
+      delegate_to: '{{ lxd_host }}'
+      register: operation_delete
+    - debug: var=operation_delete.json
+    - name: fail if snapshot delete failure
+      fail:
+        msg: "Error deleting snapshot- {{ operation_delete.json.metadata.err }}"
+      when:
+        - operation_delete.json.metadata.status == 'Failure'
+
+
+    ## Get fingerprint of old image and delete the image
+    - name: get the finger print of old image
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost/1.0/images/aliases/{{ inventory_hostname }}-{{ interval }}-{{ previousDate }}'
+        method: GET
+        return_content: yes
+        status_code:
+          - 200
+          - 202
+      delegate_to: '{{ lxd_host }}'
+      ignore_errors: true
+      register: image_fingerprint
+    - debug: var=image_fingerprint.json.metadata
+
+    - block:
+      - name: delete previous image last 1 hour if exists
+        uri:
+          unix_socket: /var/lib/lxd/unix.socket
+          url: 'http://localhost/1.0/images/{{ image_fingerprint.json.metadata.target }}'
+          method: DELETE
+          return_content: yes
+          status_code:
+            - 200
+            - 202
+        delegate_to: '{{ lxd_host }}'
+        register: image_delete
+        ignore_errors: true
+
+      - debug: var=image_delete.json.metadata
+
+      - name: wait for delete image operation to complete for {{ inventory_hostname }}
+        uri:
+          unix_socket: /var/lib/lxd/unix.socket
+          url: 'http://localhost{{ image_delete.json.operation }}/wait'
+          return_content: yes
+          timeout: 60
+        delegate_to: '{{ lxd_host }}'
+        register: operation_image_delete
+
+      - debug: var=operation_image_delete.json
+      - name: fail if image delete failure
+        fail:
+          msg: "Error deleting old image - {{ operation_image_delete.json.metadata.err }}"
+        when:
+          - operation_image_delete.json.metadata.status == 'Failure'
+      when: image_fingerprint.json.metadata.target is defined
+
