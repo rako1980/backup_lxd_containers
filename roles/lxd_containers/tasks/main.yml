@@ -1,0 +1,8 @@
+---
+- assert:
+    that:
+      - task is defined
+      - lxd_host is defined
+
+- name: include {{ task }}.yml file
+  include_tasks: '{{ task }}.yml'

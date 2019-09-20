@@ -1,0 +1,42 @@
+---
+- assert:
+    that:
+      - image_name is defined
+      - image_description is defined
+      - container_name is defined
+      - snapshot_name is defined
+
+- name: create image
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: http://localhost/1.0/images
+    method: post
+    return_content: yes
+    body: '{"aliases": [{"name":"{{ image_name }}","description":"{{ image_description }}"}],"source":{"type":"snapshot","name":"{{ container_name }}/{{ snapshot_name }}"}}'
+    body_format: json
+    status_code:
+      - 200
+      - 202
+  delegate_to: '{{ lxd_host }}'
+  register: image
+
+- debug: var=image.json.metadata.status
+  
+
+- name: wait for create image operation to complete
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost{{ image.json.operation }}/wait'
+    return_content: yes
+    timeout: "{{ timeout | default('1800', true) }}"
+  delegate_to: '{{ lxd_host }}'
+  register: operation_image
+
+- debug: var=operation_image.json.status
+  
+
+- name: fail if create image operation failed
+  fail:
+    msg: "Error creating image - {{ operation_image.json.metadata.err }}"
+  when:
+    - operation_image.json.metadata.status == 'Failure'

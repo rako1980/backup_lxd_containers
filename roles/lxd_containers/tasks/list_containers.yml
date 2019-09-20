@@ -1,0 +1,30 @@
+---
+- name: get containers list
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: http://localhost/1.0/containers
+    return_content: yes
+    status_code:
+      - 200
+  delegate_to: '{{ lxd_host }}'
+  register: container_list
+
+#- debug:
+#    var: container_list.json.metadata
+  
+
+- name: get name of containers
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost/{{ item }}'
+    return_content: yes
+    status_code:
+      - 200
+  delegate_to: '{{ lxd_host }}'
+  register: containers
+  with_items:
+    - "{{ container_list.json.metadata }}"
+
+- debug:
+    var: containers | json_query('results[*].json.metadata.name')
+  

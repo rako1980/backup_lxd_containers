@@ -1,0 +1,38 @@
+---
+- assert:
+    that:
+      - container_name is defined
+      - snapshot_name is defined
+
+- name: delete snapshot
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost/1.0/containers/{{ container_name }}/snapshots/{{ snapshot_name }}'
+    method: delete
+    return_content: yes
+    status_code:
+      - 200
+      - 202
+  delegate_to: '{{ lxd_host }}'
+  register: snapshot_delete
+- debug: var=snapshot_delete.json.metadata.status
+  
+
+- name: wait for snapshot delete operation to complete
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost{{ snapshot_delete.json.operation }}/wait'
+    return_content: yes
+    timeout: 60
+  delegate_to: '{{ lxd_host }}'
+  register: operation_snapshot_delete
+
+- debug: var=operation_snapshot_delete.json.metadata.status
+  
+
+- name: fail if delete snapshot operation failed
+  fail:
+    msg: "Error deleting snapshot- {{ operation_snapshot_delete.json.metadata.err }}"
+  when:
+    - operation_snapshot_delete.json.metadata.status == 'Failure'
+

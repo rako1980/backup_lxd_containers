@@ -1,0 +1,40 @@
+---
+- assert:
+    that:
+      - container_name is defined
+      - snapshot_name is defined
+
+- name: take a snapshot
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost/1.0/containers/{{ container_name }}/snapshots'
+    method: post
+    return_content: yes
+    body: '{ "name": "{{ snapshot_name }}" }'
+    body_format: json
+    status_code:
+      - 200
+      - 202
+  delegate_to: '{{ lxd_host }}'
+  register: snapshot
+
+- debug: var=snapshot.json.metadata.status
+  
+
+- name: wait for take snapshot operation to complete
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost{{ snapshot.json.operation }}/wait'
+    return_content: yes
+    timeout: "{{ timeout | default('1800', true) }}"
+  delegate_to: '{{ lxd_host }}'
+  register: operation_snapshot
+
+- debug: var=operation_snapshot.json.metadata.status
+  
+
+- name: fail if take snapshot operation failed
+  fail:
+    msg: "Error creating snapshot - {{ operation_snapshot.json.metadata.err }}"
+  when:
+    - operation_snapshot.json.metadata.status == 'Failure'

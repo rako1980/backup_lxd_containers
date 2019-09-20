@@ -1,0 +1,38 @@
+---
+- assert:
+    that:
+      - image_fingerprint is defined
+
+- name: delete image
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost/1.0/images/{{ image_fingerprint }}'
+    method: DELETE
+    return_content: yes
+    status_code:
+      - 200
+      - 202
+  delegate_to: '{{ lxd_host }}'
+  register: image_delete
+  ignore_errors: true
+
+- debug: var=image_delete.json.metadata.status
+  
+
+- name: wait for delete image operation to complete
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost{{ image_delete.json.operation }}/wait'
+    return_content: yes
+    timeout: 60
+  delegate_to: '{{ lxd_host }}'
+  register: operation_image_delete
+
+- debug: var=operation_image_delete.json.metadata.status
+  
+
+- name: fail if delete image operation failed
+  fail:
+    msg: "Error deleting old image - {{ operation_image_delete.json.metadata.err }}"
+  when:
+    - operation_image_delete.json.metadata.status == 'Failure'

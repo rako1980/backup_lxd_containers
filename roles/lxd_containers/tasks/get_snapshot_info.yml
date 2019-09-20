@@ -1,0 +1,22 @@
+- assert:
+    that:
+      - container_name is defined
+      - snapshot_name is defined
+
+- name: get the info of a snapshot
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost/1.0/containers/{{ container_name }}/snapshots/{{ snapshot_name }}'
+    method: GET
+    return_content: yes
+    status_code:
+      - 200
+      - 202
+  delegate_to: '{{ lxd_host }}'
+  ignore_errors: "{{ ignore_errors | default('false', true) }}"
+  no_log: "{{ no_log | default('false', true) }}"
+  register: snapshot_info
+
+- debug: var=snapshot_info.json.metadata.name
+
+  

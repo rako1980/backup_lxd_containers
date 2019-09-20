@@ -1,0 +1,42 @@
+- assert:
+    that:
+      - image_name is defined
+
+- name: get the image alias info
+  uri:
+    unix_socket: /var/lib/lxd/unix.socket
+    url: 'http://localhost/1.0/images/aliases/{{ image_name }}'
+    method: GET
+    return_content: yes
+    status_code:
+      - 200
+      - 202
+  delegate_to: '{{ lxd_host }}'
+  ignore_errors: "{{ ignore_errors | default('false', true) }}"
+  no_log: "{{ no_log | default('false', true) }}"
+  register: image_alias_info
+
+- block:
+    - set_fact:
+        image_alias: '{{ image_alias_info.json.metadata }}'
+
+    - name: get the info of an image
+      uri:
+        unix_socket: /var/lib/lxd/unix.socket
+        url: 'http://localhost/1.0/images/{{ image_alias_info.json.metadata.target }}'
+        method: GET
+        return_content: yes
+        status_code:
+          - 200
+          - 202
+      delegate_to: '{{ lxd_host }}'
+      ignore_errors: "{{ ignore_error | default('false', true) }}"
+      no_log: "{{ no_log | default('false', true) }}"
+      register: image_info
+
+    - set_fact:
+         image: '{{ image_info.json.metadata }}'
+
+    - debug: var=image.fingerprint
+ 
+  when: image_alias_info.json.metadata.target is defined
