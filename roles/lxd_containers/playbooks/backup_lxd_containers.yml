@@ -1,0 +1,112 @@
+---
+- name: ensure lxd host is defined
+  hosts: localhost
+  tasks:
+    - assert:
+        that:
+          - lxd_host is defined
+          - interval is defined
+        fail_msg: 'lxd_host=hostname and interval=[weekly|daily] need to be defined'
+
+- name: Get all containers on {{ lxd_host }} and add it to ansible inventory
+  hosts: '{{ lxd_host }}'
+  gather_facts: false
+  
+  tasks:
+    - name: list containers on {{ lxd_host }}
+      include_role:
+        name: lxd_containers
+        tasks_from: list_containers.yml
+
+    - name: add all containers name to in memory inventory
+      add_host:
+        groups: lxd_containers
+        name: '{{ item }}'
+      with_items:
+        - "{{ containers | json_query('results[*].json.metadata.name') }}"
+
+- name: Clean up old snap-backup snapshots if any
+  hosts: lxd_containers
+  gather_facts: false
+
+  tasks:
+    - name: check if old backup snapshot exists
+      include_role:
+        name: lxd_containers
+        tasks_from: get_snapshot_info.yml
+      vars:
+        container_name: "{{ inventory_hostname }}"
+        snapshot_name: snap-backup 
+        ignore_errors: true
+        no_log: true
+    
+    - name: remove old backup snapshot on container {{ inventory_hostname }} if it exists
+      include_role:
+        name: lxd_containers
+        tasks_from: delete_snapshot.yml
+      vars:
+        container_name: "{{ inventory_hostname }}"
+        snapshot_name: snap-backup 
+      when: snapshot_info.json.metadata.name is defined
+
+- name: start creating image sequentially for each container one at a time
+  hosts: lxd_containers
+  gather_facts: false
+  serial: 1
+
+  pre_tasks:
+    - set_fact:
+        todayDate: "{{ lookup('pipe','date +%Y-%m-%d') }}"
+        #todayDate: "{{ lookup('pipe','date +%Y-%m-%d-%H') }}"
+    - set_fact:
+        previousDate: "{{ lookup('pipe','date +%Y-%m-%d -d -3day') }}"
+        #previousDate: "{{ lookup('pipe','date +%Y-%m-%d-%H -d -5hour') }}"
+      when: interval == 'daily'
+    - set_fact:
+        previousDate: "{{ lookup('pipe','date +%Y-%m-%d -d -3week') }}"
+      when: interval == 'weekley'
+
+  tasks:
+    - name: take a snapshot of {{ inventory_hostname }}
+      include_role:
+        name: lxd_containers
+        tasks_from: create_snapshot.yml
+      vars:
+        container_name: "{{ inventory_hostname }}"
+        snapshot_name: snap-backup
+        timeout: 300
+
+    - name: create image of {{ inventory_hostname }}/snap-backup snapshot
+      include_role:
+        name: lxd_containers
+        tasks_from: create_image.yml
+      vars:
+        image_name: '{{ inventory_hostname }}-{{ interval }}-{{ todayDate }}'
+        image_description: 'Image created by backup playbook'
+        container_name: "{{ inventory_hostname }}"
+        snapshot_name: snap-backup 
+        timeout: 1800
+  
+    - name: remove the snap-backup snapshot on container {{ inventory_hostname }}
+      include_role:
+        name: lxd_containers
+        tasks_from: delete_snapshot.yml
+      vars:
+        container_name: "{{ inventory_hostname }}"
+        snapshot_name: snap-backup 
+    
+    - name: get image info
+      include_role:
+        name: lxd_containers
+        tasks_from: image_info.yml
+      vars:
+        image_name: '{{ inventory_hostname }}-{{ interval }}-{{ previousDate }}'
+        ignore_errors: true
+    
+    - name: Delete the image {{ inventory_hostname }}-{{ interval }}-{{ previousDate }}
+      include_role:
+        name: lxd_containers
+        tasks_from: delete_image.yml
+      vars:
+        image_fingerprint: '{{ image.fingerprint }}'
+      when: image.fingerprint is defined
